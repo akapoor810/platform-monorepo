@@ -1,0 +1,100 @@
+// Prisma schema for platform-monorepo
+// Auto-generated — do not edit manually
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             String    @id @default(cuid())
+  email          String    @unique
+  name           String?
+  hashedPassword String?
+  role           String    @default("member")
+  orgId          String?
+  org            Org?      @relation(fields: [orgId], references: [id])
+  apiKeys        ApiKey[]
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  deactivatedAt  DateTime?
+}
+
+model Org {
+  id          String      @id @default(cuid())
+  name        String
+  slug        String      @unique
+  plan        String      @default("free")
+  ssoEnforced Boolean     @default(false)
+  ssoConfig   SsoConfig?
+  users       User[]
+  apiKeys     ApiKey[]
+  invites     Invite[]
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  deletedAt   DateTime?
+}
+
+model ApiKey {
+  id        String    @id @default(cuid())
+  key       String    @unique
+  name      String
+  orgId     String
+  org       Org       @relation(fields: [orgId], references: [id])
+  userId    String
+  user      User      @relation(fields: [userId], references: [id])
+  scopes    String[]
+  expiresAt DateTime?
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+}
+
+model SsoConfig {
+  id            String   @id @default(cuid())
+  orgId         String   @unique
+  org           Org      @relation(fields: [orgId], references: [id])
+  provider      String   // "okta" | "azure-ad" | "google"
+  domain        String
+  metadataUrl   String
+  certificate   String
+  status        String   @default("pending") // "pending" | "active" | "disabled"
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model Invite {
+  id        String   @id @default(cuid())
+  email     String
+  orgId     String
+  org       Org      @relation(fields: [orgId], references: [id])
+  role      String   @default("member")
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  action    String
+  actorId   String
+  targetId  String?
+  targetType String?
+  metadata  Json?
+  orgId     String
+  createdAt DateTime @default(now())
+}
+
+model UsageRecord {
+  id        String   @id @default(cuid())
+  orgId     String
+  metric    String   // "api_calls" | "storage_bytes" | "seats"
+  value     Int
+  period    String   // "2026-03"
+  createdAt DateTime @default(now())
+
+  @@unique([orgId, metric, period])
+}
