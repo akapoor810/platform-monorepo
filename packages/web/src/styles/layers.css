@@ -1,0 +1,54 @@
+/*
+ * CSS Layer ordering for z-index stacking context.
+ *
+ * BUG: Dropdown menus render behind modals because the dropdown
+ * uses z-50 while modals use z-50 too, but modals create a new
+ * stacking context with `isolation: isolate`.
+ * See issue #49
+ */
+
+@layer base, components, utilities;
+
+@layer base {
+  :root {
+    --z-dropdown: 50;
+    --z-modal-backdrop: 40;
+    --z-modal: 50;     /* Same as dropdown — this is the bug! */
+    --z-tooltip: 60;
+    --z-toast: 70;
+  }
+}
+
+@layer components {
+  .dropdown-menu {
+    z-index: var(--z-dropdown);
+    position: absolute;
+  }
+
+  .modal-backdrop {
+    z-index: var(--z-modal-backdrop);
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+  }
+
+  .modal {
+    z-index: var(--z-modal);
+    position: fixed;
+    /* isolation: isolate creates a new stacking context */
+    /* This makes the modal's z-index relative to its parent, not the page */
+    isolation: isolate;
+  }
+
+  .tooltip {
+    z-index: var(--z-tooltip);
+    position: absolute;
+  }
+
+  .toast-container {
+    z-index: var(--z-toast);
+    position: fixed;
+    top: 1rem;
+    right: 1rem;
+  }
+}
