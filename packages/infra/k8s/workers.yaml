@@ -1,0 +1,77 @@
+# BullMQ worker deployment
+# See issue #46 for OOM crash issues
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: queue-workers
+  namespace: acme
+  labels:
+    app: queue-workers
+    component: queue
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: queue-workers
+  template:
+    metadata:
+      labels:
+        app: queue-workers
+    spec:
+      containers:
+        - name: worker
+          image: ghcr.io/akapoor810/platform-monorepo/api:latest
+          command: ["node", "packages/api/dist/workers/index.js"]
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"  # OOM crashes at this limit — see issue #46
+              cpu: "500m"
+          env:
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: redis-credentials
+                  key: url
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: db-credentials
+                  key: url
+            - name: NODE_ENV
+              value: "production"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3001
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3001
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      restartPolicy: Always
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: queue-workers-hpa
+  namespace: acme
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: queue-workers
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

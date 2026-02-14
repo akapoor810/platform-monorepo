@@ -1,0 +1,49 @@
+# GitHub Actions self-hosted runner deployment
+# See issue #65 for CI cost reduction plan
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: github-runners
+  namespace: ci
+  labels:
+    app: github-runners
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: github-runners
+  template:
+    metadata:
+      labels:
+        app: github-runners
+    spec:
+      serviceAccountName: github-runner
+      containers:
+        - name: runner
+          image: summerwind/actions-runner:latest
+          env:
+            - name: RUNNER_REPOSITORY_URL
+              value: "https://github.com/akapoor810/platform-monorepo"
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: github-runner-token
+                  key: token
+            - name: RUNNER_LABELS
+              value: "self-hosted,linux,x64"
+          resources:
+            requests:
+              memory: "4Gi"
+              cpu: "2000m"
+            limits:
+              memory: "8Gi"
+              cpu: "4000m"
+          volumeMounts:
+            - name: docker-sock
+              mountPath: /var/run/docker.sock
+      volumes:
+        - name: docker-sock
+          hostPath:
+            path: /var/run/docker.sock
+      # Security concern: sharing docker socket with host
+      # TODO: switch to rootless Docker or sysbox runtime

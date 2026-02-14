@@ -1,0 +1,39 @@
+# Multi-stage Dockerfile for the API service
+# Known issue: fails on ARM64 (M1/M2 Macs) due to sharp compilation
+# See issue #60
+
+FROM node:20-slim AS base
+RUN corepack enable && corepack prepare pnpm@9.1.0 --activate
+WORKDIR /app
+
+# Install dependencies
+FROM base AS deps
+COPY pnpm-lock.yaml ./
+COPY package.json ./
+COPY packages/api/package.json packages/api/
+COPY libs/db/package.json libs/db/
+COPY libs/auth/package.json libs/auth/
+COPY libs/logger/package.json libs/logger/
+COPY libs/queue/package.json libs/queue/
+RUN pnpm install --frozen-lockfile
+
+# Build
+FROM deps AS build
+COPY . .
+RUN pnpm --filter @acme/api build
+RUN pnpm --filter @acme/db exec prisma generate
+
+# Production
+FROM node:20-slim AS production
+RUN corepack enable && corepack prepare pnpm@9.1.0 --activate
+WORKDIR /app
+
+COPY --from=build /app/packages/api/dist ./packages/api/dist
+COPY --from=build /app/packages/api/package.json ./packages/api/
+COPY --from=build /app/libs/db/prisma ./libs/db/prisma
+COPY --from=build /app/node_modules/.pnpm ./node_modules/.pnpm
+COPY --from=build /app/node_modules/.prisma ./node_modules/.prisma
+
+ENV NODE_ENV=production
+EXPOSE 3000
+CMD ["node", "packages/api/dist/index.js"]
