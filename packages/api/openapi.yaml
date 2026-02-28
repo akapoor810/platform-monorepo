@@ -1,0 +1,149 @@
+openapi: "3.0.3"
+info:
+  title: Acme Platform API
+  version: "1.4.0"
+  description: |
+    API for the Acme platform monorepo.
+
+    **Note:** This spec is outdated — 14 endpoints are missing.
+    See issue #33 for tracking.
+  contact:
+    email: platform-team@acme.dev
+
+servers:
+  - url: https://api.acme.dev/v1
+    description: Production
+  - url: https://api-staging.acme.dev/v1
+    description: Staging
+
+paths:
+  /auth/login:
+    post:
+      summary: Authenticate with email and password
+      tags: [Auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+      responses:
+        "200":
+          description: Authentication successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+                  user:
+                    $ref: "#/components/schemas/User"
+        "401":
+          description: Invalid credentials
+
+  /orgs:
+    get:
+      summary: List organizations
+      tags: [Organizations]
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: List of organizations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Org"
+
+  /orgs/{orgId}/users:
+    get:
+      summary: List organization members
+      tags: [Organizations]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        "200":
+          description: Paginated list of members
+
+  # TODO: Missing endpoints (see issue #33):
+  # - POST /orgs/{orgId}/invites
+  # - DELETE /orgs/{orgId}/invites/{inviteId}
+  # - POST /auth/sso/callback
+  # - POST /auth/refresh
+  # - GET /api-keys
+  # - POST /api-keys
+  # - DELETE /api-keys/{keyId}
+  # - GET /usage/current
+  # - GET /audit-log
+  # - POST /webhooks
+  # - GET /webhooks
+  # - DELETE /webhooks/{webhookId}
+  # - POST /billing/checkout
+  # - GET /billing/portal
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        role:
+          type: string
+          enum: [member, admin, owner]
+        createdAt:
+          type: string
+          format: date-time
+
+    Org:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        slug:
+          type: string
+        plan:
+          type: string
+          enum: [free, pro, enterprise]
+        createdAt:
+          type: string
+          format: date-time
