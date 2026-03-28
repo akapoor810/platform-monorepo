@@ -1,0 +1,29 @@
+{
+  "name": "platform-monorepo",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "libs/*"
+  ],
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "test:e2e": "turbo run test:e2e --filter=web",
+    "test:integration": "turbo run test:integration --filter=api",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "db:migrate": "pnpm --filter @acme/db migrate",
+    "db:seed": "pnpm --filter @acme/db seed"
+  },
+  "devDependencies": {
+    "turbo": "^2.1.0",
+    "typescript": "^5.5.0",
+    "prettier": "^3.3.0",
+    "eslint": "^9.8.0"
+  },
+  "packageManager": "pnpm@9.7.0",
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
