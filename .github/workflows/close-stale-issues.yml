@@ -11,6 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/stale@v9
+        id: stale
         with:
           # --- Timing ---
           days-before-stale: -1 # Disable the "stale" warning step
@@ -50,11 +51,54 @@ jobs:
           exempt-all-milestones: true
           exempt-all-assignees: false
 
-      - name: Close duplicate issues
+      - name: Notify Slack about stale closures
+        if: steps.stale.outputs.closed-issues-prs != ''
         uses: actions/github-script@v7
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        with:
+          script: |
+            const closedIssues = '${{ steps.stale.outputs.closed-issues-prs }}'
+              .split(',')
+              .map(n => n.trim())
+              .filter(Boolean);
+
+            if (closedIssues.length === 0) return;
+
+            const { owner, repo } = context.repo;
+            const repoUrl = `https://github.com/${owner}/${repo}`;
+
+            for (const issueNumber of closedIssues) {
+              const { data: issue } = await github.rest.issues.get({
+                owner,
+                repo,
+                issue_number: parseInt(issueNumber),
+              });
+
+              const author = issue.user.login;
+              const payload = {
+                text: `:wastebasket: Issue <${repoUrl}/issues/${issueNumber}|#${issueNumber}> was auto-closed as *stale*.\n` +
+                  `*Title:* ${issue.title}\n` +
+                  `*Author:* @${author}\n` +
+                  `The issue was open for more than 7 days without a \`keep\` label. ` +
+                  `To reopen, add the \`keep\` label and reopen the issue.`,
+              };
+
+              await fetch(process.env.SLACK_WEBHOOK_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+              });
+            }
+
+      - name: Close duplicate issues and notify Slack
+        uses: actions/github-script@v7
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         with:
           script: |
             const { owner, repo } = context.repo;
+            const repoUrl = `https://github.com/${owner}/${repo}`;
             const issues = await github.paginate(github.rest.issues.listForRepo, {
               owner,
               repo,
@@ -115,6 +159,21 @@ jobs:
                   issue_number: dupe.number,
                   state: 'closed',
                   state_reason: 'not_planned',
+                });
+
+                // Send Slack notification
+                const author = dupe.user.login;
+                const payload = {
+                  text: `:wastebasket: Issue <${repoUrl}/issues/${dupe.number}|#${dupe.number}> was auto-closed as a *duplicate* of <${repoUrl}/issues/${original.number}|#${original.number}>.\n` +
+                    `*Title:* ${dupe.title}\n` +
+                    `*Author:* @${author}\n` +
+                    `Both issues describe the same problem. Work will be tracked in #${original.number}.`,
+                };
+
+                await fetch(process.env.SLACK_WEBHOOK_URL, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(payload),
                 });
               }
             }
