@@ -58,38 +58,53 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         with:
           script: |
-            const closedIssues = '${{ steps.stale.outputs.closed-issues-prs }}'
+            const raw = '${{ steps.stale.outputs.closed-issues-prs }}';
+            console.log('Raw closed-issues-prs output:', JSON.stringify(raw));
+
+            // Extract numeric issue numbers, handling formats like "42", "#42", or URLs
+            const closedIssueNumbers = raw
               .split(',')
-              .map(n => n.trim())
-              .filter(Boolean);
+              .map(entry => {
+                const match = entry.match(/(\d+)/);
+                return match ? parseInt(match[1], 10) : NaN;
+              })
+              .filter(n => !isNaN(n) && n > 0);
 
-            if (closedIssues.length === 0) return;
+            if (closedIssueNumbers.length === 0) {
+              console.log('No valid issue numbers found in output, skipping notifications.');
+              return;
+            }
 
+            console.log('Notifying Slack for closed issues:', closedIssueNumbers);
             const { owner, repo } = context.repo;
             const repoUrl = `https://github.com/${owner}/${repo}`;
 
-            for (const issueNumber of closedIssues) {
-              const { data: issue } = await github.rest.issues.get({
-                owner,
-                repo,
-                issue_number: parseInt(issueNumber),
-              });
+            for (const issueNumber of closedIssueNumbers) {
+              try {
+                const { data: issue } = await github.rest.issues.get({
+                  owner,
+                  repo,
+                  issue_number: issueNumber,
+                });
 
-              const author = issue.user.login;
-              const payload = {
-                channel: '#triage-issue-updates',
-                text: `:wastebasket: Issue <${repoUrl}/issues/${issueNumber}|#${issueNumber}> was auto-closed as *stale*.\n` +
-                  `*Title:* ${issue.title}\n` +
-                  `*Author:* @${author}\n` +
-                  `The issue was open for more than 7 days without a \`keep\` label. ` +
-                  `To reopen, add the \`keep\` label and reopen the issue.`,
-              };
+                const author = issue.user.login;
+                const payload = {
+                  channel: '#triage-issue-updates',
+                  text: `:wastebasket: Issue <${repoUrl}/issues/${issueNumber}|#${issueNumber}> was auto-closed as *stale*.\n` +
+                    `*Title:* ${issue.title}\n` +
+                    `*Author:* @${author}\n` +
+                    `The issue was open for more than 7 days without a \`keep\` label. ` +
+                    `To reopen, add the \`keep\` label and reopen the issue.`,
+                };
 
-              await fetch(process.env.SLACK_WEBHOOK_URL, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload),
-              });
+                await fetch(process.env.SLACK_WEBHOOK_URL, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(payload),
+                });
+              } catch (err) {
+                console.error(`Failed to notify for issue #${issueNumber}:`, err.message);
+              }
             }
 
       - name: Close duplicate issues and notify Slack
