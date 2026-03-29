@@ -80,7 +80,7 @@ Based on your analysis, determine:
   (same component + similar error/description):
   a) Identify the most complete/informative issue as the **canonical** issue
   b) For each duplicate (less informative or newer) issue, you MUST label and
-     close it — see Step 6c for the exact commands to run
+     close it — see Step 6b for the exact commands to run
 
 ### 5. Calculate Priority Score
 Score from 1-10 based on:
@@ -111,7 +111,8 @@ gh issue edit {issue.number} --repo {repo_name} --add-label "triaged"
 b) If duplicates were found in Step 4, label and close each duplicate NOW:
 For EACH duplicate issue, run BOTH of these commands:
 gh issue edit <DUPLICATE_NUMBER> --repo {repo_name} --add-label "duplicate"
-gh issue close <DUPLICATE_NUMBER> --repo {repo_name} --comment "Closing as duplicate of #{issue.number}"
+gh issue close <DUPLICATE_NUMBER> --repo {repo_name} --comment "Closing as duplicate of #<CANONICAL_NUMBER>"
+(Use the canonical issue number you identified in Step 4a as <CANONICAL_NUMBER>.)
 Do NOT skip this step — every duplicate must be labeled and closed.
 
 c) Post a comment on issue #{issue.number} with this format:
