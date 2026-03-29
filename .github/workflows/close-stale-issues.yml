@@ -77,6 +77,7 @@ jobs:
 
               const author = issue.user.login;
               const payload = {
+                channel: '#triage-issue-updates',
                 text: `:wastebasket: Issue <${repoUrl}/issues/${issueNumber}|#${issueNumber}> was auto-closed as *stale*.\n` +
                   `*Title:* ${issue.title}\n` +
                   `*Author:* @${author}\n` +
@@ -164,6 +165,7 @@ jobs:
                 // Send Slack notification
                 const author = dupe.user.login;
                 const payload = {
+                  channel: '#triage-issue-updates',
                   text: `:wastebasket: Issue <${repoUrl}/issues/${dupe.number}|#${dupe.number}> was auto-closed as a *duplicate* of <${repoUrl}/issues/${original.number}|#${original.number}>.\n` +
                     `*Title:* ${dupe.title}\n` +
                     `*Author:* @${author}\n` +

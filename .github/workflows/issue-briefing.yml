@@ -1,0 +1,258 @@
+name: Weekly Issue Briefing
+
+on:
+  schedule:
+    - cron: '0 10 * * 1' # Every Monday at 10:00 AM UTC (after triage and auto-close complete)
+  workflow_dispatch: # Manual trigger
+
+permissions:
+  issues: read
+
+jobs:
+  send-briefing:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate and send issue briefing to Slack
+        uses: actions/github-script@v7
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const repoUrl = `https://github.com/${owner}/${repo}`;
+            const now = new Date();
+            const oneWeekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+            const twoWeeksAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
+            const staleThresholdDays = 14;
+            const staleDate = new Date(now.getTime() - staleThresholdDays * 24 * 60 * 60 * 1000);
+
+            // ── Fetch all open issues ──
+            const openIssues = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: 'open', per_page: 100,
+            });
+            const realOpen = openIssues.filter(i => !i.pull_request);
+
+            // ── Fetch issues closed this week ──
+            const closedIssues = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: 'closed', since: oneWeekAgo.toISOString(), per_page: 100,
+            });
+            const realClosedThisWeek = closedIssues.filter(i =>
+              !i.pull_request && new Date(i.closed_at) >= oneWeekAgo
+            );
+
+            // ── Fetch issues closed last week (for trend comparison) ──
+            const realClosedLastWeek = closedIssues.filter(i =>
+              !i.pull_request &&
+              new Date(i.closed_at) >= twoWeeksAgo &&
+              new Date(i.closed_at) < oneWeekAgo
+            );
+
+            // Also fetch closed issues from two weeks ago for last-week data
+            const olderClosed = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: 'closed', since: twoWeeksAgo.toISOString(), per_page: 100,
+            });
+            const allClosedLastWeek = olderClosed.filter(i =>
+              !i.pull_request &&
+              new Date(i.closed_at) >= twoWeeksAgo &&
+              new Date(i.closed_at) < oneWeekAgo
+            );
+
+            // ── Helper: extract component from labels ──
+            function getComponent(issue) {
+              const comp = issue.labels.find(l => l.name.startsWith('component:'));
+              return comp ? comp.name.replace('component:', '') : 'untagged';
+            }
+
+            // ── Helper: check if high priority ──
+            function isHighPriority(issue) {
+              return issue.labels.some(l =>
+                ['priority:critical', 'priority:high', 'severity:critical', 'severity:high'].includes(l.name)
+              );
+            }
+
+            // ── Helper: format age ──
+            function formatAge(date) {
+              const days = Math.floor((now - new Date(date)) / (1000 * 60 * 60 * 24));
+              if (days === 0) return 'today';
+              if (days === 1) return '1 day';
+              if (days < 7) return `${days} days`;
+              const weeks = Math.floor(days / 7);
+              return weeks === 1 ? '1 week' : `${weeks} weeks`;
+            }
+
+            // ── New issues opened this week ──
+            const openedThisWeek = realOpen.filter(i => new Date(i.created_at) >= oneWeekAgo);
+            const openedLastWeek = realOpen.filter(i =>
+              new Date(i.created_at) >= twoWeeksAgo && new Date(i.created_at) < oneWeekAgo
+            );
+
+            // ── Group by component ──
+            const components = {};
+            for (const issue of realOpen) {
+              const comp = getComponent(issue);
+              if (!components[comp]) components[comp] = { open: [], newThisWeek: [], closedThisWeek: [], closedLastWeek: [], stale: [], stuck: [], unassignedHighPri: [] };
+              components[comp].open.push(issue);
+              if (new Date(issue.created_at) >= oneWeekAgo) components[comp].newThisWeek.push(issue);
+            }
+            for (const issue of realClosedThisWeek) {
+              const comp = getComponent(issue);
+              if (!components[comp]) components[comp] = { open: [], newThisWeek: [], closedThisWeek: [], closedLastWeek: [], stale: [], stuck: [], unassignedHighPri: [] };
+              components[comp].closedThisWeek.push(issue);
+            }
+            for (const issue of allClosedLastWeek) {
+              const comp = getComponent(issue);
+              if (!components[comp]) components[comp] = { open: [], newThisWeek: [], closedThisWeek: [], closedLastWeek: [], stale: [], stuck: [], unassignedHighPri: [] };
+              components[comp].closedLastWeek.push(issue);
+            }
+
+            // ── Identify stale, stuck, and unassigned high-priority ──
+            for (const issue of realOpen) {
+              const comp = getComponent(issue);
+              const age = now - new Date(issue.created_at);
+              const ageDays = Math.floor(age / (1000 * 60 * 60 * 24));
+
+              // Stale: crossed the threshold this week
+              if (new Date(issue.created_at) <= staleDate) {
+                const wasStaleLastWeek = new Date(issue.created_at) <= new Date(staleDate.getTime() - 7 * 24 * 60 * 60 * 1000);
+                if (!wasStaleLastWeek) {
+                  components[comp].stale.push(issue);
+                }
+              }
+
+              // Stuck: assigned but no linked PR or recent commit activity
+              if (issue.assignees && issue.assignees.length > 0) {
+                // Check for linked PRs via timeline events
+                try {
+                  const events = await github.rest.issues.listEventsForTimeline({
+                    owner, repo, issue_number: issue.number, per_page: 100,
+                  });
+                  const hasLinkedPR = events.data.some(e =>
+                    e.event === 'cross-referenced' || e.event === 'referenced' || e.event === 'connected'
+                  );
+                  const hasRecentComment = events.data.some(e =>
+                    e.event === 'commented' && new Date(e.created_at) >= oneWeekAgo
+                  );
+                  if (!hasLinkedPR && !hasRecentComment && ageDays > 3) {
+                    components[comp].stuck.push(issue);
+                  }
+                } catch (e) {
+                  // Skip timeline check on error
+                }
+              }
+
+              // Unassigned high-priority
+              if (isHighPriority(issue) && (!issue.assignees || issue.assignees.length === 0)) {
+                components[comp].unassignedHighPri.push(issue);
+              }
+            }
+
+            // ── Build the Slack message ──
+            const sections = [];
+
+            // Header
+            sections.push(`:newspaper: *Weekly Issue Briefing — ${now.toISOString().slice(0, 10)}*`);
+            sections.push(`_${owner}/${repo} • ${realOpen.length} open issues_\n`);
+
+            // Overall summary
+            const totalOpenedThisWeek = openedThisWeek.length;
+            const totalClosedThisWeek = realClosedThisWeek.length;
+            const totalOpenedLastWeek = openedLastWeek.length;
+            const totalClosedLastWeek = allClosedLastWeek.length;
+            const netThisWeek = totalOpenedThisWeek - totalClosedThisWeek;
+            const netLastWeek = totalOpenedLastWeek - totalClosedLastWeek;
+
+            sections.push(`*Velocity Overview*`);
+            sections.push(
+              `• Opened this week: *${totalOpenedThisWeek}* (last week: ${totalOpenedLastWeek})\n` +
+              `• Closed this week: *${totalClosedThisWeek}* (last week: ${totalClosedLastWeek})\n` +
+              `• Net change: *${netThisWeek >= 0 ? '+' : ''}${netThisWeek}* (last week: ${netLastWeek >= 0 ? '+' : ''}${netLastWeek})`
+            );
+
+            if (netThisWeek > 0 && netThisWeek > netLastWeek) {
+              sections.push(`> :warning: Backlog is growing faster than last week.`);
+            } else if (netThisWeek < 0) {
+              sections.push(`> :white_check_mark: Backlog is shrinking — good progress.`);
+            }
+
+            // Age distribution
+            const age0to7 = realOpen.filter(i => (now - new Date(i.created_at)) / 86400000 <= 7).length;
+            const age7to30 = realOpen.filter(i => {
+              const d = (now - new Date(i.created_at)) / 86400000;
+              return d > 7 && d <= 30;
+            }).length;
+            const age30plus = realOpen.filter(i => (now - new Date(i.created_at)) / 86400000 > 30).length;
+
+            sections.push(`\n*Age Distribution*`);
+            sections.push(`• < 1 week: ${age0to7} • 1–4 weeks: ${age7to30} • > 30 days: ${age30plus}`);
+
+            // Component breakdown
+            sections.push(`\n*By Component*`);
+            const sortedComponents = Object.entries(components)
+              .sort((a, b) => b[1].open.length - a[1].open.length);
+
+            for (const [comp, data] of sortedComponents) {
+              const openCount = data.open.length;
+              const newCount = data.newThisWeek.length;
+              const closedCount = data.closedThisWeek.length;
+              const closedLastWeekCount = data.closedLastWeek.length;
+              const net = newCount - closedCount;
+
+              let trend = '';
+              if (net > 0) trend = ' :small_red_triangle:';
+              else if (net < 0) trend = ' :small_red_triangle_down:';
+
+              let line = `*${comp}* — ${openCount} open | +${newCount} new / -${closedCount} closed${trend}`;
+              if (closedLastWeekCount !== closedCount) {
+                line += ` _(last week: -${closedLastWeekCount})_`;
+              }
+              sections.push(line);
+            }
+
+            // Issues that crossed staleness threshold
+            const allNewlyStale = Object.values(components).flatMap(c => c.stale);
+            if (allNewlyStale.length > 0) {
+              sections.push(`\n:hourglass: *Newly Stale (crossed ${staleThresholdDays}-day threshold this week)*`);
+              for (const issue of allNewlyStale) {
+                sections.push(`• <${repoUrl}/issues/${issue.number}|#${issue.number}> ${issue.title} — ${formatAge(issue.created_at)} old`);
+              }
+            }
+
+            // Stuck issues
+            const allStuck = Object.values(components).flatMap(c => c.stuck);
+            if (allStuck.length > 0) {
+              sections.push(`\n:construction: *Stuck Issues (assigned, no linked PR or recent activity)*`);
+              for (const issue of allStuck) {
+                const assignees = issue.assignees.map(a => `@${a.login}`).join(', ');
+                sections.push(`• <${repoUrl}/issues/${issue.number}|#${issue.number}> ${issue.title} — assigned to ${assignees}, ${formatAge(issue.created_at)} old`);
+              }
+            }
+
+            // Unassigned high-priority
+            const allUnassignedHighPri = Object.values(components).flatMap(c => c.unassignedHighPri);
+            if (allUnassignedHighPri.length > 0) {
+              sections.push(`\n:rotating_light: *Unassigned High-Priority Issues (need immediate attention)*`);
+              for (const issue of allUnassignedHighPri) {
+                const labels = issue.labels.map(l => l.name).filter(n => n.startsWith('priority:') || n.startsWith('severity:')).join(', ');
+                sections.push(`• <${repoUrl}/issues/${issue.number}|#${issue.number}> ${issue.title} — ${labels}, ${formatAge(issue.created_at)} old`);
+              }
+            }
+
+            // Footer
+            sections.push(`\n_Generated by GitHub Actions • <${repoUrl}/actions|View workflow>_`);
+
+            // ── Send to Slack ──
+            const message = sections.join('\n');
+
+            const resp = await fetch(process.env.SLACK_WEBHOOK_URL, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ text: message }),
+            });
+
+            if (!resp.ok) {
+              const body = await resp.text();
+              core.setFailed(`Slack webhook failed: ${resp.status} ${body}`);
+            } else {
+              console.log('Briefing sent to Slack successfully.');
+              console.log(`Message length: ${message.length} chars`);
+            }
