@@ -1,7 +1,9 @@
 name: Weekly Issue Briefing
 
 on:
-  workflow_dispatch: # Manual trigger only
+  schedule:
+    - cron: '0 10 * * 1' # Every Monday at 10:00 AM UTC (after triage and auto-close complete)
+  workflow_dispatch: # Manual trigger
 
 permissions:
   issues: read
