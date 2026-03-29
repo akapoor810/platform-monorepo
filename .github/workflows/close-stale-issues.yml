@@ -10,102 +10,107 @@ jobs:
   close-stale-issues:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/stale@v9
-        id: stale
-        with:
-          # --- Timing ---
-          days-before-stale: -1 # Disable the "stale" warning step
-          days-before-close: 7 # Close issues that have been open > 7 days
-
-          # --- Exempt labels ---
-          exempt-issue-labels: "keep,priority:critical,priority:high,severity:critical,severity:high"
-
-          # --- Close message ---
-          close-issue-message: |
-            **This issue has been automatically closed** as part of our backlog
-            grooming process. Issues open for more than 7 days without the `keep`
-            label are closed to help the team focus on the highest-priority work.
-
-            **Why was this closed?**
-            - The issue did not have a `keep` label, indicating it was not
-              explicitly marked for preservation during triage.
-            - It may be a stale request, a duplicate, or lower priority relative
-              to the current backlog.
-
-            **How to reopen:**
-            - If this issue is still relevant, simply reopen it and add the `keep`
-              label to prevent future auto-closure.
-            - You can also comment on this issue explaining why it should remain
-              open and a maintainer will review it.
-
-          # --- Labels applied on close ---
-          close-issue-label: "stale"
-
-          # --- Scope ---
-          only-issues: true # Don't touch pull requests
-
-          # --- Rate limiting ---
-          operations-per-run: 100
-
-          # --- Filtering ---
-          exempt-all-milestones: true
-          exempt-all-assignees: false
-
-      - name: Notify Slack about stale closures
-        if: steps.stale.outputs.closed-issues-prs != ''
+      - name: Close stale issues and notify Slack
         uses: actions/github-script@v7
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         with:
           script: |
-            const raw = '${{ steps.stale.outputs.closed-issues-prs }}';
-            console.log('Raw closed-issues-prs output:', JSON.stringify(raw));
-
-            // Extract numeric issue numbers, handling formats like "42", "#42", or URLs
-            const closedIssueNumbers = raw
-              .split(',')
-              .map(entry => {
-                const match = entry.match(/(\d+)/);
-                return match ? parseInt(match[1], 10) : NaN;
-              })
-              .filter(n => !isNaN(n) && n > 0);
-
-            if (closedIssueNumbers.length === 0) {
-              console.log('No valid issue numbers found in output, skipping notifications.');
-              return;
-            }
-
-            console.log('Notifying Slack for closed issues:', closedIssueNumbers);
             const { owner, repo } = context.repo;
             const repoUrl = `https://github.com/${owner}/${repo}`;
+            const STALE_DAYS = 7;
+            const EXEMPT_LABELS = ['keep', 'priority:critical', 'priority:high', 'severity:critical', 'severity:high'];
 
-            for (const issueNumber of closedIssueNumbers) {
+            const cutoff = new Date();
+            cutoff.setDate(cutoff.getDate() - STALE_DAYS);
+
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner,
+              repo,
+              state: 'open',
+              sort: 'created',
+              direction: 'asc',
+              per_page: 100,
+            });
+
+            // Filter to real issues (not PRs), older than cutoff, without exempt labels
+            const staleIssues = issues.filter(issue => {
+              if (issue.pull_request) return false;
+              if (new Date(issue.created_at) > cutoff) return false;
+              const labels = issue.labels.map(l => l.name);
+              return !EXEMPT_LABELS.some(exempt => labels.includes(exempt));
+            });
+
+            console.log(`Found ${staleIssues.length} stale issues (older than ${STALE_DAYS} days without exempt labels)`);
+
+            let closedCount = 0;
+            for (const issue of staleIssues) {
               try {
-                const { data: issue } = await github.rest.issues.get({
+                console.log(`Closing #${issue.number}: "${issue.title}" (created ${issue.created_at})`);
+
+                // Add 'stale' label
+                await github.rest.issues.addLabels({
                   owner,
                   repo,
-                  issue_number: issueNumber,
+                  issue_number: issue.number,
+                  labels: ['stale'],
                 });
 
-                const author = issue.user.login;
-                const payload = {
-                  channel: '#issue-triage-updates',
-                  text: `:wastebasket: Issue <${repoUrl}/issues/${issueNumber}|#${issueNumber}> was auto-closed as *stale*.\n` +
-                    `*Title:* ${issue.title}\n` +
-                    `*Author:* @${author}\n` +
-                    `The issue was open for more than 7 days without a \`keep\` label. ` +
-                    `To reopen, add the \`keep\` label and reopen the issue.`,
-                };
-
-                await fetch(process.env.SLACK_WEBHOOK_URL, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify(payload),
+                // Post a comment explaining the closure
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: issue.number,
+                  body: `**This issue has been automatically closed** as part of our backlog\n` +
+                    `grooming process. Issues open for more than ${STALE_DAYS} days without the \`keep\`\n` +
+                    `label are closed to help the team focus on the highest-priority work.\n\n` +
+                    `**Why was this closed?**\n` +
+                    `- The issue did not have a \`keep\` label, indicating it was not\n` +
+                    `  explicitly marked for preservation during triage.\n` +
+                    `- It may be a stale request, a duplicate, or lower priority relative\n` +
+                    `  to the current backlog.\n\n` +
+                    `**How to reopen:**\n` +
+                    `- If this issue is still relevant, simply reopen it and add the \`keep\`\n` +
+                    `  label to prevent future auto-closure.\n` +
+                    `- You can also comment on this issue explaining why it should remain\n` +
+                    `  open and a maintainer will review it.`,
                 });
+
+                // Close the issue
+                await github.rest.issues.update({
+                  owner,
+                  repo,
+                  issue_number: issue.number,
+                  state: 'closed',
+                  state_reason: 'not_planned',
+                });
+
+                closedCount++;
+
+                // Send Slack notification
+                if (process.env.SLACK_WEBHOOK_URL) {
+                  const author = issue.user.login;
+                  const payload = {
+                    channel: '#issue-triage-updates',
+                    text: `:wastebasket: Issue <${repoUrl}/issues/${issue.number}|#${issue.number}> was auto-closed as *stale*.\n` +
+                      `*Title:* ${issue.title}\n` +
+                      `*Author:* @${author}\n` +
+                      `The issue was open for more than ${STALE_DAYS} days without a \`keep\` label. ` +
+                      `To reopen, add the \`keep\` label and reopen the issue.`,
+                  };
+
+                  await fetch(process.env.SLACK_WEBHOOK_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                  });
+                }
               } catch (err) {
-                console.error(`Failed to notify for issue #${issueNumber}:`, err.message);
+                console.error(`Failed to close issue #${issue.number}:`, err.message);
               }
             }
+
+            console.log(`Closed ${closedCount} stale issues`);
 
       - name: Close duplicate issues and notify Slack
         uses: actions/github-script@v7
@@ -133,6 +138,7 @@ jobs:
               groups[key].push(issue);
             }
 
+            let closedCount = 0;
             for (const [key, dupes] of Object.entries(groups)) {
               if (dupes.length < 2) continue;
 
@@ -146,51 +152,61 @@ jobs:
                 // Skip issues with the 'keep' label
                 if (dupe.labels.some(l => l.name === 'keep')) continue;
 
-                console.log(`Closing #${dupe.number} as duplicate of #${original.number}`);
+                try {
+                  console.log(`Closing #${dupe.number} as duplicate of #${original.number}`);
 
-                // Add 'duplicate' label
-                await github.rest.issues.addLabels({
-                  owner,
-                  repo,
-                  issue_number: dupe.number,
-                  labels: ['duplicate'],
-                });
+                  // Add 'duplicate' label
+                  await github.rest.issues.addLabels({
+                    owner,
+                    repo,
+                    issue_number: dupe.number,
+                    labels: ['duplicate'],
+                  });
 
-                // Post a comment explaining the closure
-                await github.rest.issues.createComment({
-                  owner,
-                  repo,
-                  issue_number: dupe.number,
-                  body: `**This issue has been automatically closed as a duplicate** of #${original.number}.\n\n` +
-                    `Both issues describe the same problem. Work will be tracked in #${original.number}.\n\n` +
-                    `**How to reopen:**\n` +
-                    `- If this is **not** a duplicate, reopen it with a comment explaining the difference and add the \`keep\` label.\n` +
-                    `- If you have additional context, please add it to #${original.number}.`,
-                });
+                  // Post a comment explaining the closure
+                  await github.rest.issues.createComment({
+                    owner,
+                    repo,
+                    issue_number: dupe.number,
+                    body: `**This issue has been automatically closed as a duplicate** of #${original.number}.\n\n` +
+                      `Both issues describe the same problem. Work will be tracked in #${original.number}.\n\n` +
+                      `**How to reopen:**\n` +
+                      `- If this is **not** a duplicate, reopen it with a comment explaining the difference and add the \`keep\` label.\n` +
+                      `- If you have additional context, please add it to #${original.number}.`,
+                  });
 
-                // Close the issue
-                await github.rest.issues.update({
-                  owner,
-                  repo,
-                  issue_number: dupe.number,
-                  state: 'closed',
-                  state_reason: 'not_planned',
-                });
+                  // Close the issue
+                  await github.rest.issues.update({
+                    owner,
+                    repo,
+                    issue_number: dupe.number,
+                    state: 'closed',
+                    state_reason: 'not_planned',
+                  });
 
-                // Send Slack notification
-                const author = dupe.user.login;
-                const payload = {
-                  channel: '#issue-triage-updates',
-                  text: `:wastebasket: Issue <${repoUrl}/issues/${dupe.number}|#${dupe.number}> was auto-closed as a *duplicate* of <${repoUrl}/issues/${original.number}|#${original.number}>.\n` +
-                    `*Title:* ${dupe.title}\n` +
-                    `*Author:* @${author}\n` +
-                    `Both issues describe the same problem. Work will be tracked in #${original.number}.`,
-                };
+                  closedCount++;
 
-                await fetch(process.env.SLACK_WEBHOOK_URL, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify(payload),
-                });
+                  // Send Slack notification to #issue-triage-updates
+                  if (process.env.SLACK_WEBHOOK_URL) {
+                    const author = dupe.user.login;
+                    const payload = {
+                      channel: '#issue-triage-updates',
+                      text: `:wastebasket: Issue <${repoUrl}/issues/${dupe.number}|#${dupe.number}> was auto-closed as a *duplicate* of <${repoUrl}/issues/${original.number}|#${original.number}>.\n` +
+                        `*Title:* ${dupe.title}\n` +
+                        `*Author:* @${author}\n` +
+                        `Both issues describe the same problem. Work will be tracked in #${original.number}.`,
+                    };
+
+                    await fetch(process.env.SLACK_WEBHOOK_URL, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify(payload),
+                    });
+                  }
+                } catch (err) {
+                  console.error(`Failed to close duplicate #${dupe.number}:`, err.message);
+                }
               }
             }
+
+            console.log(`Closed ${closedCount} duplicate issues`);
