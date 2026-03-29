@@ -1,9 +1,7 @@
 name: Close Stale Issues
 
 on:
-  schedule:
-    - cron: '30 9 * * 1' # Every Monday at 9:30 AM UTC (after triage completes)
-  workflow_dispatch: # Manual trigger
+  workflow_dispatch: # Manual trigger only
 
 permissions:
   issues: write
