@@ -1,4 +1,5 @@
 # triage_agent.py — Orchestrator for the issue triage agent
+import argparse
 import os
 import time
 import requests
@@ -157,15 +158,6 @@ the available credentials and execute the commands.
 # ── Step 3 & 4: Create Devin sessions in batches and poll ──
 BATCH_SIZE = 5  # stay within concurrent session limit
 
-if __name__ == "__main__":
-    open_issues = repo.get_issues(state="open")
-    issues_to_triage = [
-        issue for issue in open_issues
-        if "triaged" not in [l.name for l in issue.labels]
-        and not issue.pull_request
-    ]
-    print(f"Found {len(issues_to_triage)} issues to triage")
-
 def wait_for_sessions(batch):
     """Poll until all sessions in batch are done."""
     print("\n  Waiting for batch to complete...")
@@ -182,16 +174,38 @@ def wait_for_sessions(batch):
             state = status.get("status_enum")
             print(f"    [poll #{poll_count}] issue #{issue_num} → state={state!r} (raw: {status})")
             if state in ["stopped", "finished"]:
-                print(f"  Issue #{issue_num}: ✅ Done")
+                print(f"  Issue #{issue_num}: Done")
                 break
             elif state == "failed":
-                print(f"  Issue #{issue_num}: ❌ Failed — {status}")
+                print(f"  Issue #{issue_num}: Failed — {status}")
                 break
             else:
                 print(f"    Sleeping 15s before next poll...")
                 time.sleep(15)
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Triage open GitHub issues via Devin sessions")
+    parser.add_argument(
+        "--max-issues",
+        type=int,
+        default=0,
+        help="Maximum number of issues to triage (0 = all untriaged issues, for demo purposes)",
+    )
+    args = parser.parse_args()
+
+    open_issues = repo.get_issues(state="open")
+    issues_to_triage = [
+        issue for issue in open_issues
+        if "triaged" not in [l.name for l in issue.labels]
+        and not issue.pull_request
+    ]
+
+    if args.max_issues > 0:
+        issues_to_triage = issues_to_triage[:args.max_issues]
+        print(f"Limiting to {args.max_issues} issues (demo mode)")
+
+    print(f"Found {len(issues_to_triage)} issues to triage")
+
     for batch_start in range(0, len(issues_to_triage), BATCH_SIZE):
         batch_issues = issues_to_triage[batch_start:batch_start + BATCH_SIZE]
         print(f"\nBatch {batch_start // BATCH_SIZE + 1}: issues {[i.number for i in batch_issues]}")
@@ -207,11 +221,11 @@ if __name__ == "__main__":
             session = response.json()
             print(f"  Devin API response (issue #{issue.number}): status={response.status_code} body={session}")
             if response.status_code != 200 or "session_id" not in session:
-                print(f"  ❌ Failed to create session for issue #{issue.number}: {session}")
+                print(f"  Failed to create session for issue #{issue.number}: {session}")
                 continue
             session_id = session["session_id"]
             batch_sessions.append((issue.number, session_id))
-            print(f"  Issue #{issue.number} → Devin session {session_id}")
+            print(f"  Issue #{issue.number} -> Devin session {session_id}")
             time.sleep(2)
 
         wait_for_sessions(batch_sessions)
