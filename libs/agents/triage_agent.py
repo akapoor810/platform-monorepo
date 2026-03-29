@@ -79,10 +79,8 @@ Based on your analysis, determine:
 - If you find issues that are clearly describing the same problem
   (same component + similar error/description):
   a) Identify the most complete/informative issue as the **canonical** issue
-  b) For each duplicate (less informative or newer) issue, apply the `duplicate`
-     label AND close it with a comment linking to the canonical issue:
-     gh issue edit <DUPLICATE_NUMBER> --repo {repo_name} --add-label "duplicate"
-     gh issue close <DUPLICATE_NUMBER> --repo {repo_name} --comment "Closing as duplicate of #<CANONICAL_NUMBER>"
+  b) For each duplicate (less informative or newer) issue, you MUST label and
+     close it — see Step 6c for the exact commands to run
 
 ### 5. Calculate Priority Score
 Score from 1-10 based on:
@@ -110,7 +108,13 @@ gh issue edit {issue.number} --repo {repo_name} --add-label "effort:<your-effort
 gh issue edit {issue.number} --repo {repo_name} --add-label "priority:<critical|high|medium|low>"
 gh issue edit {issue.number} --repo {repo_name} --add-label "triaged"
 
-b) Post a comment on issue #{issue.number} with this format:
+b) If duplicates were found in Step 4, label and close each duplicate NOW:
+For EACH duplicate issue, run BOTH of these commands:
+gh issue edit <DUPLICATE_NUMBER> --repo {repo_name} --add-label "duplicate"
+gh issue close <DUPLICATE_NUMBER> --repo {repo_name} --comment "Closing as duplicate of #{issue.number}"
+Do NOT skip this step — every duplicate must be labeled and closed.
+
+c) Post a comment on issue #{issue.number} with this format:
 gh issue comment {issue.number} --repo {repo_name} --body "
 ## Triage Summary
 **Priority Score:** X/10 (`priority:<label>`)
