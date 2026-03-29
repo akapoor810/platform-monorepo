@@ -7,7 +7,7 @@ from github import Github  # pip install PyGithub
 # ── Config ──────────────────────────────────────────────────
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 DEVIN_API_KEY = os.environ["DEVIN_API_KEY"]
-REPO_NAME = "your-username/your-demo-repo"
+REPO_NAME = "akapoor810/platform-monorepo"  # also accessible as akapoor-cognition/platform-monorepo
 
 DEVIN_API_BASE = "https://api.devin.ai/v1"
 DEVIN_HEADERS = {
@@ -19,19 +19,15 @@ DEVIN_HEADERS = {
 gh = Github(GITHUB_TOKEN)
 repo = gh.get_repo(REPO_NAME)
 
-open_issues = repo.get_issues(state="open")
-issues_to_triage = [
-    issue for issue in open_issues
-    if "triaged" not in [l.name for l in issue.labels]
-    and not issue.pull_request  # skip PRs
-]
-
-print(f"Found {len(issues_to_triage)} issues to triage")
-
 # ── Step 2: Build the Devin prompt for each issue ──────────
 def build_triage_prompt(issue, repo_name):
     return f"""
-You are an issue triage agent. Analyze GitHub issue #{issue.number}
+You are an issue triage agent. Work autonomously from start to finish — do NOT pause, ask for clarification, or wait for confirmation at any point. If you are uncertain about anything, make your best judgment and proceed.
+
+First, authenticate with GitHub: gh auth login --with-token <<< "$GITHUB_TOKEN"
+Then clone the repo: gh repo clone {REPO_NAME}
+Then cd into the repo directory.
+Analyze GitHub issue #{issue.number}
 in the repo `{repo_name}` and perform the following:
 
 ## Issue Details
@@ -119,47 +115,66 @@ describe what you would do. Authenticate with the GitHub CLI using
 the available credentials and execute the commands.
 """
 
-# ── Step 3: Create Devin sessions ──────────────────────────
-session_ids = []
+# ── Step 3 & 4: Create Devin sessions in batches and poll ──
+BATCH_SIZE = 5  # stay within concurrent session limit
 
-for issue in issues_to_triage:
-    prompt = build_triage_prompt(issue, REPO_NAME)
+if __name__ == "__main__":
+    open_issues = repo.get_issues(state="open")
+    issues_to_triage = [
+        issue for issue in open_issues
+        if "triaged" not in [l.name for l in issue.labels]
+        and not issue.pull_request
+    ]
+    print(f"Found {len(issues_to_triage)} issues to triage")
 
-    response = requests.post(
-        f"{DEVIN_API_BASE}/sessions",
-        headers=DEVIN_HEADERS,
-        json={
-            "prompt": prompt,
-            # Optionally attach the repo so Devin can explore it:
-            # "idling_timeout": 30,  # minutes before auto-pause
-        },
-    )
-    session = response.json()
-    session_id = session["session_id"]
-    session_ids.append((issue.number, session_id))
-    print(f"  Issue #{issue.number} → Devin session {session_id}")
+def wait_for_sessions(batch):
+    """Poll until all sessions in batch are done."""
+    print("\n  Waiting for batch to complete...")
+    for issue_num, sid in batch:
+        print(f"  Polling issue #{issue_num} (session {sid})...")
+        poll_count = 0
+        while True:
+            poll_count += 1
+            resp = requests.get(
+                f"{DEVIN_API_BASE}/session/{sid}",
+                headers=DEVIN_HEADERS,
+            )
+            status = resp.json()
+            state = status.get("status_enum")
+            print(f"    [poll #{poll_count}] issue #{issue_num} → state={state!r} (raw: {status})")
+            if state in ["stopped", "finished"]:
+                print(f"  Issue #{issue_num}: ✅ Done")
+                break
+            elif state == "failed":
+                print(f"  Issue #{issue_num}: ❌ Failed — {status}")
+                break
+            else:
+                print(f"    Sleeping 15s before next poll...")
+                time.sleep(15)
 
-    # Rate limit: don't slam the API
-    time.sleep(2)
+if __name__ == "__main__":
+    for batch_start in range(0, len(issues_to_triage), BATCH_SIZE):
+        batch_issues = issues_to_triage[batch_start:batch_start + BATCH_SIZE]
+        print(f"\nBatch {batch_start // BATCH_SIZE + 1}: issues {[i.number for i in batch_issues]}")
+        batch_sessions = []
 
-# ── Step 4: Poll for completion ────────────────────────────
-print("\nWaiting for Devin sessions to complete...")
+        for issue in batch_issues:
+            prompt = build_triage_prompt(issue, REPO_NAME)
+            response = requests.post(
+                f"{DEVIN_API_BASE}/sessions",
+                headers=DEVIN_HEADERS,
+                json={"prompt": prompt, "idling_timeout": 10},
+            )
+            session = response.json()
+            print(f"  Devin API response (issue #{issue.number}): status={response.status_code} body={session}")
+            if response.status_code != 200 or "session_id" not in session:
+                print(f"  ❌ Failed to create session for issue #{issue.number}: {session}")
+                continue
+            session_id = session["session_id"]
+            batch_sessions.append((issue.number, session_id))
+            print(f"  Issue #{issue.number} → Devin session {session_id}")
+            time.sleep(2)
 
-for issue_num, sid in session_ids:
-    while True:
-        status = requests.get(
-            f"{DEVIN_API_BASE}/session/{sid}",
-            headers=DEVIN_HEADERS,
-        ).json()
+        wait_for_sessions(batch_sessions)
 
-        state = status.get("status_enum")
-        if state in ["stopped", "finished"]:
-            print(f"  Issue #{issue_num}: ✅ Done")
-            break
-        elif state == "failed":
-            print(f"  Issue #{issue_num}: ❌ Failed")
-            break
-        else:
-            time.sleep(15)  # check every 15 seconds
-
-print("\nTriage complete!")
+    print("\nTriage complete!")
